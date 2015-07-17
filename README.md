@@ -16,7 +16,7 @@ Just make sure to output the Media scripts and styles in your html-header like t
 
 ```PHP
 <?php echo Media::get_html_styles_and_scripts(); ?>
-´´´
+```
 
 This will output all needed javascript and css import tags for the currently used module.
 You just need to make sure you render your content views BEFORE the layout view (Because your Media::add_script()) calls should be located in the views.
@@ -80,7 +80,7 @@ class Controller extends Kohana_Controller
 		$this->response->body($this->_layout_view->render());
 	}
 }
-´´´
+```
 
 The layout view will get the evaluated content views as $content.
 
@@ -95,7 +95,7 @@ Example layout view:
 		<?php echo $content; ?>
 	</body>
 </html>
-´´´
+```
 
 
 Third-Party Licenses
