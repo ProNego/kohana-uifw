@@ -65,15 +65,61 @@ class Kohana_Datatable extends UIModule
      * @var int
      */
     protected $_page_length = 10;
+    
+    /**
+     * The cache instance used for caching. May be null for no caching.
+     * @var Cache
+     */
+    protected $_cache = NULL;
+    
+    /**
+     * Used as additional prefix after datatables_. Ex. datatables_articletable_*. Used to prevent collision with other cached tables. Must be set if cache is not false.
+     * @var string
+     */
+    protected $_cache_data_name = NULL;
+    
+    /**
+     * Holds the ids of columns which are not allowed to get ordered.
+     * @var array
+     */
+    protected $_order_disabled = array();
+    
+    /**
+     * Holds the ids of columns which are not allowed to filtered ordered.
+     * This can for example get used for orm-models if you got "imaginary" properties which are not in really existing in the database.
+     * You can permit filtering on them to prevent a mysql error
+     * @var array
+     */
+    protected $_filtering_disabled = array();
+    
+    /**
+     * Loaded in constructor.
+     * @var Config
+     */
+    protected $_config = NULL;
 
     /**
-     * Sets the columns for this datatable
-     * @param $columns The header columns as strings front-to-back. Ex.: array("id", "name", "price");
+     * Initializes the datatable.
+     * Caching will get used to cache datatable results. It will use a datatables_ prefix for cache entries.
+     * Caching will __ONLY__ get used for ajax rendering (for filtering and ordering).
+     * 
+     * @param $columns The header columns as strings front-to-back with their array-key or ORM-property as key. Ex.: array("id" => "id", "name" => "name", "price" => "price");
+     * @param bool $cache Standard is false (No caching). Otherwise the name of the caching group OR a Cache instance.
+     * @param string $cache_data_name Used as additional prefix after datatables_. Ex. datatables_articletable_* for name="articletable". Used to prevent collision with other cached tables. Must be set if cache is not false.
      */
-    public function __construct($columns, $page_length = 10)
+    public function __construct($columns, $page_length = 10, $cache = FALSE, $cache_data_name = '')
     {
         $this->_columns = $columns;
         $this->_page_length = $page_length;
+        $this->_config = Kohana::$config->load('datatables');
+        
+        if ($cache instanceof Cache)
+        	$this->_cache = $cache;
+        else if (is_string($cache))
+        	$this->_cache = Cache::instance($cache);
+        
+        if ($this->_cache != NULL && empty($cache_data_name))
+        	throw new Exception('Cant use datatables caching without cache data name!');
     }
     
     /**
@@ -101,11 +147,16 @@ class Kohana_Datatable extends UIModule
 
     /**
      * Same as add_entry() but batched.
-     * @param $entries Multiple entries in an array, ex.: array(array(1, "Entry with id 1", 10), ...);
+     * Or, if you pass in an orm-model as entries, data will get read directly from the database.
+     * Using ORM will cause the filter and order system to use the database for that.
+     * @param ORM or array $entries Multiple entries in an array, ex.: array(array(1, "Entry with id 1", 10), ...); or ORM-Model
      */
     public function add_entries($entries)
     {
-        $this->_entries = array_merge($this->_entries, $entries);
+    	if ($entries instanceof ORM)
+    		$this->_entries = $entries;
+    	else
+        	$this->_entries = array_merge($this->_entries, $entries);
     }
 
     /**
@@ -117,7 +168,188 @@ class Kohana_Datatable extends UIModule
     {
         $this->_active_extensions[] = $extension;
     }
+    
+    /**
+     * Disables filtering on the specified column id.
+     * The id is based on the index of the column set in the constructor.
+     * @param int$column_id
+     */
+    public function disable_filterability($column_id)
+    {
+    	$this->_filtering_disabled[] = $column_id;
+    }
 
+    /**
+     * Disables order on the specified column id.
+     * The id is based on the index of the column set in the constructor.
+     * @param int$column_id
+     */
+    public function disable_orderability($column_id)
+    {
+    	$column_defs = Arr::get($this->_options, 'columnDefs', array());
+    	 
+    	// Create column definition
+    	$column_def = new stdClass();
+    	$column_def->orderable = false;
+    	$column_def->targets = $column_id;
+    
+    	$column_defs[] = $column_def;
+    	 
+    	$this->_options['columnDefs'] = $column_defs;
+    	$this->_order_disabled[] = $column_id;
+    }
+    
+    /**
+     * Filters and orders this datatable's entries.
+     * The parameters are mapping to the ajax get parameters of datatables.
+     * They are documented here: https://datatables.net/manual/server-side.
+     * 
+     * If entries is a ORM-object, this will not execute the query but build it.
+     */
+    public function filter_and_order($columns, $search, $order)
+    {
+    	// Construct cache key
+    	$hash = hash('sha512', serialize(array('search' => $search, 'columns' => $columns, 'order' => $order)));
+	    $cache_string = 'datatables_'.$this->_cache_data_name.'_'.$hash;
+	    $is_orm = ($this->_entries instanceof ORM);
+	    
+    	$read_from_cache = FALSE;
+    	
+	    // Try reading from cache
+    	if (!$is_orm && $this->_cache != NULL)
+    	{
+    		// Check cache
+    		$cached_entries = $this->_cache->get($cache_string, NULL);
+    	
+    		if ($cached_entries != NULL)
+    		{
+    			$this->_entries = $cached_entries;
+    			return;
+    		}
+    	}
+	    	 
+    	
+    	// Array-filtering
+    	if (is_array($this->_entries))
+    	{
+	    	// Perform search
+	    	$search = new DatatableFilter($columns, $search, $this->_filtering_disabled);
+	    	$orderer = new DatatableOrderer($order, $this->_order_disabled);
+	    	if (!$read_from_cache)
+	    	{
+	    		// Filter
+	    		$this->_entries = $search->filter($this->_entries);
+	    		
+	    		// Order
+	    		$this->_entries = $orderer->order($this->_entries, $this->_columns);
+	    		
+		    	// Set cache
+		    	if ($this->_cache != NULL)
+		    		$this->_cache->set($cache_string, $this->_prepare_entries($this->_entries), $this->_config->get('cache_time', 300));
+	    	}
+    	}
+    	// ORM-filtering
+    	else if ($is_orm)
+    	{
+    		// TODO: Regex?
+    		$column_keys = array_keys($this->_columns);
+    		
+    		// Analyze order array
+    		foreach ($order AS $o)
+    		{
+    			// Order validation
+    			if ( ! isset($o['column']) || ! isset($o['dir']) || in_array($o['column'], $this->_order_disabled))
+    				continue;
+    		
+    			// SQL injection check
+    			$o['dir'] = (strtolower($o['dir']) == "asc" || strtolower($o['dir']) == "desc") ? $o['dir'] : 'desc';
+    			
+    			// Get column name
+    			$db_col = $column_keys[intval($o['column'])];
+    			$this->_entries->order_by($db_col, $o['dir']);
+    		}
+    		
+    		// Analyze filters
+    		if(isset($search['value']) && !empty($search['value']))
+    		{
+    			$this->_entries->or_where_open();
+    			$i = 0;
+    			// Set like for all columns
+    			foreach ($this->_columns AS $db_col => $label)
+    			{
+    				$i++;
+    				
+    				// Check if filtering is allowed
+    				if (in_array($i-1, $this->_filtering_disabled))
+    					continue;
+    				
+    				$this->_entries->or_where($db_col, 'LIKE', '%'.$search['value'].'%');
+    			}
+    			$this->_entries->or_where_close();
+    		}
+    		 
+    		// Construct column filter
+    		foreach ($columns AS $key => $col)
+    		{
+    			if (! in_array($key, $this->_filtering_disabled) && isset($col['search']) &&
+    					isset($col['search']['value']) && !empty($col['search']['value']))
+    			{
+    				$db_col = $column_keys[intval($key)];
+    				$this->_entries->where($db_col, 'LIKE', '%'.$col['search']['value'].'%');
+    			}
+    		}
+    	}
+	    	
+    }
+    
+    /**
+     * Called just after the entries have been filtered and ordered and are getting rendered.
+     * This function will "convert" orm models to arrays.
+     * Returns the prepared entries array.
+     * 
+     * @param bool $no_keys Retruns the array with no key, ex. input. array(array("test1" => "test1 text")) - output array(array("test1 text")).
+     */
+    private function _prepare_entries($entries, $no_keys = FALSE)
+    {
+    	$return = array();
+    	
+    	$is_orm = isset($entries[0]) && ($entries[0] instanceof ORM);
+    	
+    	foreach ($entries AS $key => $val)
+    	{
+    		if ($is_orm)
+    		{
+    			$obj = $val->object();
+    			
+	    		// Create new array
+	    		$return[$key] = array();
+	    		 
+	    		// Evaluate model
+	    		foreach ($this->_columns AS $col_key => $col)
+	    		{
+	    			if ($no_keys)
+	    			{
+	    				$return[$key][] = $obj[$col_key];
+	    			}
+	    			else
+	    			{
+	    				if (isset($obj[$col_key]))
+	    					$return[$key][$col_key] = $obj[$col_key];
+	    				else
+	    					$return[$key][$col_key] = $val->get($col_key);
+	    			}
+	    		}
+    		}
+    		// No keys for array?
+    		else if (is_array($val) && $no_keys)
+    		{
+    			$return[$key] = array_values($val);
+    		}
+    	}
+    	
+    	return $return;
+    }
+    
     /**
      * Renders the datatable view for this datatable object and return's it's html content.
      */
@@ -140,6 +372,7 @@ class Kohana_Datatable extends UIModule
             }
         }
         
+        
         // Prepare view for rendering
         $view = View::factory('datatable', $view_data);
         
@@ -148,6 +381,12 @@ class Kohana_Datatable extends UIModule
         {
         	$view->set('serverside', true);
         	$view->set('ajax_url', $this->_serverside);
+        }
+        else
+        {
+	    	// find all by orm if we are on an orm object
+	    	if ($this->_entries instanceof ORM)
+	    		$this->_entries = $this->_prepare_entries($this->_entries->find_all()->as_array());
         }
         
         $view->bind('columns', $this->_columns);
@@ -167,27 +406,63 @@ class Kohana_Datatable extends UIModule
     public function ajax_render()
     {
     	// Manual to Datatables SSP: https://datatables.net/manual/server-side
-    	// TODO:
-    	// Server-side filtering
-    	// Optional get parameter handling
+    	
+    	// Get total
+    	$is_orm = ($this->_entries instanceof ORM);
+    	if ($is_orm)
+    		$total_all = $this->_entries->count_all();
+    	else
+    		$total_all = count($this->_entries);
     	
     	// Get parameters
     	$draw = Arr::get($_GET, 'draw', 0);
     	$start = Arr::get($_GET, 'start', 0);
     	$length = Arr::get($_GET, 'length', 10);
     	
+    	// Get filter and sort values
+    	$columns = Arr::get($_GET, 'columns', array());
+    	$order = Arr::get($_GET, 'order', array());
+    	$search = Arr::get($_GET, 'search', array('value' => '', 'regex' => false));
+    	
+    	// Filter
+    	$this->filter_and_order($columns, $search, $order);
+    	
     	// Calculate offsets
-    	$total = count($this->_entries);
-    	$sent_count = $total - $start - $length;
+    	if ($is_orm)
+    	{
+    		// ORM needs special counting
+    		$orm_result = $this->_entries->find_all();
+	    	$total = $orm_result->count();
+    	}
+    	// Array counting
+    	else 
+    		$total = count($this->_entries);
+    	
+    	// Calculate the ammount of items we are sending
+	    $sent_count = $total - $start - $length;
     	if ($sent_count < 0)
     		$sent_count = $length + $sent_count;
     	else
     		$sent_count = $length;
-    	
+
     	// Slice out data from the data array
-    	$data_array = array_slice($this->_entries, $start, $sent_count);
-    	$data = array('draw' => $draw, 'recordsTotal' => $total, 'recordsFiltered' => $total, 'data' => $data_array);
+    	if ($is_orm)
+    	{
+    		// If we are on an orm object
+    		$data_array = array();
+    		
+    		for ($i = $start; $i < ($start + $sent_count); $i++)
+    		{
+    			$data_array[] = $orm_result[$i];
+    		}
+    		
+    		$data_array = $this->_prepare_entries($data_array, TRUE);
+    	}
+    	else
+    		$data_array = $this->_prepare_entries(array_slice($this->_entries, $start, $sent_count), TRUE);
     	
+    	// Build json data and return
+    	$data = array('draw' => $draw, 'recordsTotal' => $total_all, 'recordsFiltered' => $total, 'data' => $data_array);
     	return json_encode($data);
     }
 }
