@@ -23,7 +23,7 @@
             "<?php echo $feature; ?>": false,
             <?php endforeach; ?>
             <?php foreach ($options AS $key => $val): ?>
-            "<?php echo $key; ?>": <?php echo (is_array($val)) ? 'jQuery.parseJSON("'.json_encode($val).'")' : $val; ?>,
+            "<?php echo $key; ?>": <?php echo (is_array($val)) ? 'jQuery.parseJSON(\''.json_encode($val).'\')' : $val; ?>,
             <?php endforeach; ?>
         });
     } );
@@ -47,12 +47,12 @@
     <?php if (!isset($serverside) || !isset($ajax_url) && !$serverside): ?>
     <tbody>
         <?php foreach ($entries AS $entry): ?>
-        <tr>
-            <?php foreach ($entry AS $t): ?>
-                <td><?php echo $t; ?></td>
-            <?php endforeach; ?>
-        </tr>
-        <?php endforeach; ?>
+	        <tr>
+	            <?php foreach ($columns AS $key => $c): ?>
+	                <td><?php echo $entry[$key]; ?></td>
+	            <?php endforeach; ?>
+	        </tr>
+	        <?php endforeach; ?>
     </tbody>
     <?php endif; ?>
 </table>
