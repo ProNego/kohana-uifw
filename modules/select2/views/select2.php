@@ -17,7 +17,7 @@
     });
 </script>
 
-<select <?php echo (isset($html_id) && !empty($html_id)) ? 'id="'.$html_id.'"' : ''; ?> class="select2">
+<select <?php echo (isset($html_id) && !empty($html_id)) ? 'id="'.$html_id.'"' : ''; ?> class="select2" name="<?php echo $name; ?>">
     <?php foreach($data AS $key => $value): ?>
         <option value="<?php echo $key; ?>"><?php echo $value; ?></option>
     <?php endforeach; ?>
